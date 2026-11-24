@@ -2,11 +2,16 @@
 // D. Singletary
 // 11/17/24
 // printer simulation
+// Mirza Zukic
+// 11/23/26
+// Synchronize queue access and printing, and run three shared printer workers.
 
 package edu.fscj.cop3330c.printsim;
 
 import java.util.LinkedList;
 import java.util.Queue;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 class IdleState implements PrinterState {
     @Override
@@ -30,9 +35,7 @@ class PrintingState implements PrinterState {
             printer.print(job);
 
             // Check if more jobs are pending
-            if (printer.hasPendingJobs()) {
-                //System.out.println("Continuing to print next job...");
-            } else {
+            if (!printer.hasPendingJobs()) {
                 System.out.println(
                         "All jobs are printed. Transitioning to Idle state...");
                 printer.setState(new IdleState());
@@ -47,74 +50,115 @@ class PrintingState implements PrinterState {
 
 // Printer Class
 public class Printer {
-    private Queue<PrintJob> printQueue;
-    private static int jobCounter = 0;
+    private final Queue<PrintJob> printQueue;
+    private final Lock lock;
+    // Serializes state transitions and printing while submissions can still enqueue.
+    private final Lock processingLock;
+    private int jobCounter;
     private PrinterState state;
 
     public Printer() {
+        lock = new ReentrantLock();
+        processingLock = new ReentrantLock();
         printQueue = new LinkedList<>();
         state = new IdleState(); // Start in IdleState
     }
 
     public void setState(PrinterState state) {
-        this.state = state;
+        processingLock.lock();
+        try {
+            this.state = state;
+        } finally {
+            processingLock.unlock();
+        }
     }
 
     public PrinterState getState() {
-        return state;
+        processingLock.lock();
+        try {
+            return state;
+        } finally {
+            processingLock.unlock();
+        }
     }
 
     public boolean hasPendingJobs() {
-        return !printQueue.isEmpty();
+        lock.lock();
+        try {
+            return !printQueue.isEmpty();
+        } finally {
+            lock.unlock();
+        }
     }
 
     public PrintJob pollJob() {
-         return printQueue.poll();
+        lock.lock();
+        try {
+            return printQueue.poll();
+        } finally {
+            lock.unlock();
+        }
     }
 
     public void addDocument(String document) {
-        PrintJob job = new PrintJob(document, ++jobCounter);
-        printQueue.offer(job);
-        System.out.println("Document added to the queue: " +
-                document + " (Job #" + job.getJobNumber() + ")");
+        lock.lock();
+        try {
+            PrintJob job = new PrintJob(document, ++jobCounter);
+            printQueue.offer(job);
+            System.out.println("Document added to the queue: " +
+                    document + " (Job #" + job.getJobNumber() + ")");
+        } finally {
+            lock.unlock();
+        }
     }
 
     public void print(PrintJob job) {
-        System.out.println("Printing Job #" + job.getJobNumber() +
-                ": " + job.getDocumentName());
+        processingLock.lock();
         try {
-            Thread.sleep(1000); // Simulate time taken to print
-        } catch (InterruptedException e) {
-            System.out.println("Printing was interrupted.");
+            System.out.println("Printing Job #" + job.getJobNumber() +
+                    ": " + job.getDocumentName());
+            try {
+                Thread.sleep(1000); // Simulate time taken to print
+            } catch (InterruptedException e) {
+                System.out.println("Printing was interrupted.");
+                Thread.currentThread().interrupt();
+                return;
+            }
+            System.out.println("Printing completed for Job #" + job.getJobNumber());
+        } finally {
+            processingLock.unlock();
         }
-        System.out.println("Printing completed for Job #" +
-                job.getJobNumber());
     }
 
     public void processQueue() {
-        state.processQueue(this);
+        processingLock.lock();
+        try {
+            state.processQueue(this);
+        } finally {
+            processingLock.unlock();
+        }
     }
 
     public static void main(String[] args) {
         final int MAX_IDLE = 5; // seconds
-
         Printer printer = new Printer();
         DocumentRepository documentRepository = new DocumentRepository();
+        Thread[] workers = new Thread[3];
 
-        // Create and start a worker thread
-        PrinterWorker worker = new PrinterWorker(printer,
-                documentRepository, MAX_IDLE);
-
-        Thread workerThread = new Thread(worker);
-
-        workerThread.start();
+        for (int i = 0; i < workers.length; i++) {
+            PrinterWorker worker = new PrinterWorker(printer, documentRepository, MAX_IDLE);
+            workers[i] = new Thread(worker, "PrinterWorker-" + (i + 1));
+            workers[i].start();
+        }
 
         try {
-            // Wait for all worker threads to finish and record the time
-            workerThread.join();
+            for (Thread worker : workers) {
+                worker.join();
+            }
+            System.out.println("All three printer workers finished.");
         } catch (InterruptedException e) {
-            System.out.println(
-                    "Main thread interrupted while waiting for worker threads.");
+            Thread.currentThread().interrupt();
+            System.out.println("Main thread interrupted while waiting for worker threads.");
         }
     }
 }

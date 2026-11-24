@@ -2,17 +2,24 @@
 // D. Singletary
 // 11/17/24
 // manage documents for printer simulation
+// Mirza Zukic
+// 11/23/26
+// Protect document retrieval and availability checks with a ReentrantLock.
 
 package edu.fscj.cop3330c.printsim;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 public class DocumentRepository {
-    private List<String> documentList;
+    private final List<String> documentList;
+    private final Lock lock;
     private int documentIndex;
 
     public DocumentRepository() {
+        this.lock = new ReentrantLock();
         this.documentList = new ArrayList<>();
         this.documentIndex = 0;
         initializeDocuments();
@@ -26,18 +33,24 @@ public class DocumentRepository {
         }
     }
 
-    // Get the next document
     public String getNextDocument() {
-        String nextDocument = null;
+        lock.lock();
         try {
-            nextDocument = documentList.get(documentIndex++);
+            if (documentIndex >= documentList.size()) {
+                return null;
+            }
+            return documentList.get(documentIndex++);
         } finally {
-            return nextDocument;
+            lock.unlock();
         }
     }
 
-    // Check if there are more documents
     public boolean hasMoreDocuments() {
-         return documentIndex < documentList.size();
+        lock.lock();
+        try {
+            return documentIndex < documentList.size();
+        } finally {
+            lock.unlock();
+        }
     }
 }
